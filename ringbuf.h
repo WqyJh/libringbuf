@@ -87,6 +87,7 @@
  *
  */
 
+#include <asm-generic/errno-base.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -94,12 +95,21 @@ extern "C" {
 #include <stdio.h>
 #include <stdint.h>
 #include <errno.h>
+#include <emmintrin.h>
 
 #define CACHE_LINE_SIZE 64
 
 #define	__compiler_barrier() do {		\
 	asm volatile ("" : : : "memory");	\
 } while(0)
+
+/* true if x is a power of 2 */
+#define POWEROF2(x) ((((x)-1) & (x)) == 0)
+
+/** Number of elements in the array. */
+#define	RINGBUF_DIM(a)	(sizeof (a) / sizeof ((a)[0]))
+
+#define RINGBUF_SET_USED(x) (void)(x)
 
 static inline int
 __atomic32_cmpset(volatile uint32_t *dst, uint32_t exp, uint32_t src)
@@ -119,15 +129,62 @@ __atomic32_cmpset(volatile uint32_t *dst, uint32_t exp, uint32_t src)
 	return res;
 }
 
+/**
+ * Combines 32b inputs most significant set bits into the least
+ * significant bits to construct a value with the same MSBs as x
+ * but all 1's under it.
+ *
+ * @param x
+ *    The integer whose MSBs need to be combined with its LSBs
+ * @return
+ *    The combined value.
+ */
+static inline uint32_t
+__combine32ms1b(uint32_t x)
+{
+	x |= x >> 1;
+	x |= x >> 2;
+	x |= x >> 4;
+	x |= x >> 8;
+	x |= x >> 16;
+
+	return x;
+}
+
+/**
+ * Aligns input parameter to the previous power of 2
+ *
+ * @param x
+ *   The integer value to align
+ *
+ * @return
+ *   Input parameter aligned to the previous power of 2
+ */
+static inline uint32_t
+__align32prevpow2(uint32_t x)
+{
+	x = __combine32ms1b(x);
+
+	return x - (x >> 1);
+}
+
+#ifndef likely
+#define likely(x)	__builtin_expect(!!(x), 1)
+#endif /* likely */
+
+#ifndef unlikely
+#define unlikely(x)	__builtin_expect(!!(x), 0)
+#endif /* unlikely */
+
 #define __RING_STAT_ADD(r, name, n) do {} while(0)
 
-enum libringbuf_queue_behavior {
+enum ringbuf_queue_behavior {
 	RINGBUF_QUEUE_FIXED = 0, /* Enq/Deq a fixed number of items from a ring */
 	RINGBUF_QUEUE_VARIABLE   /* Enq/Deq as many items a possible from ring */
 };
 
 #ifndef RINGBUF_PAUSE_REP_COUNT
-#define RINGBUF_PAUSE_REP_COUNT 0 /**< Yield after pause num of times, no yield
+#define RINGBUF_PAUSE_REP_COUNT 0 /** Yield after pause num of times, no yield \
                                     *   if RINGBUF_PAUSE_REP not defined. */
 #endif
 
@@ -142,14 +199,14 @@ enum libringbuf_queue_behavior {
  * a problem.
  */
 struct ringbuf {
-	int flags;                       /**< Flags supplied at creation. */
+	int flags;                  /**< Flags supplied at creation. */
+    uint32_t size;              /**< Size of ring. */
+	uint32_t mask;              /**< Mask (size-1) of ring. */
+    uint32_t capacity;          /**< Usable size of ring */
 
 	/** Ring producer status. */
 	struct prod {
-		uint32_t watermark;      /**< Maximum items before EDQUOT. */
 		uint32_t sp_enqueue;     /**< True, if single producer. */
-		uint32_t size;           /**< Size of ring. */
-		uint32_t mask;           /**< Mask (size-1) of ring. */
 		volatile uint32_t head;  /**< Producer head. */
 		volatile uint32_t tail;  /**< Producer tail. */
 	} prod __attribute__((__aligned__(CACHE_LINE_SIZE)));
@@ -157,8 +214,6 @@ struct ringbuf {
 	/** Ring consumer status. */
 	struct cons {
 		uint32_t sc_dequeue;     /**< True, if single consumer. */
-		uint32_t size;           /**< Size of the ring. */
-		uint32_t mask;           /**< Mask (size-1) of ring. */
 		volatile uint32_t head;  /**< Consumer head. */
 		volatile uint32_t tail;  /**< Consumer tail. */
 	} cons  __attribute__((__aligned__(CACHE_LINE_SIZE)));
@@ -170,7 +225,15 @@ struct ringbuf {
 
 #define RING_F_SP_ENQ 0x0001 /**< The default enqueue is "single-producer". */
 #define RING_F_SC_DEQ 0x0002 /**< The default dequeue is "single-consumer". */
-#define RINGBUF_QUOT_EXCEED (1 << 31)  /**< Quota exceed for burst ops */
+/**
+ * Ring is to hold exactly requested number of entries.
+ * Without this flag set, the ring size requested must be a power of 2, and the
+ * usable space will be that size - 1. With the flag, the requested size will
+ * be rounded up to the next power of two, but the usable space will be exactly
+ * that requested. Worst case, if a power-of-2 size is requested, half the
+ * ring space will be wasted.
+ */
+#define RING_F_EXACT_SZ 0x0004
 #define RINGBUF_SZ_MASK  (unsigned)(0x0fffffff) /**< Ring size mask */
 
 /**
@@ -187,7 +250,7 @@ struct ringbuf {
  *   - The memory size needed for the ring on success.
  *   - -EINVAL if count is not a power of 2.
  */
-ssize_t libringbuf_get_memsize(unsigned count);
+ssize_t ringbuf_get_memsize(unsigned count);
 
 /**
  * Initialize a ring structure.
@@ -204,15 +267,15 @@ ssize_t libringbuf_get_memsize(unsigned count);
  * @param flags
  *   An OR of the following:
  *    - RING_F_SP_ENQ: If this flag is set, the default behavior when
- *      using ``libringbuf_enqueue()`` or ``libringbuf_enqueue_bulk()``
+ *      using ``ringbuf_enqueue()`` or ``ringbuf_enqueue_bulk()``
  *      is "single-producer". Otherwise, it is "multi-producers".
  *    - RING_F_SC_DEQ: If this flag is set, the default behavior when
- *      using ``libringbuf_dequeue()`` or ``libringbuf_dequeue_bulk()``
+ *      using ``ringbuf_dequeue()`` or ``ringbuf_dequeue_bulk()``
  *      is "single-consumer". Otherwise, it is "multi-consumers".
  * @return
  *   0 on success, or a negative value on error.
  */
-int libringbuf_init(struct ringbuf *r, unsigned count,
+int ringbuf_init(struct ringbuf *r, unsigned count,
 	unsigned flags);
 
 /**
@@ -227,10 +290,10 @@ int libringbuf_init(struct ringbuf *r, unsigned count,
  * @param flags
  *   An OR of the following:
  *    - RING_F_SP_ENQ: If this flag is set, the default behavior when
- *      using ``libringbuf_enqueue()`` or ``libringbuf_enqueue_bulk()``
+ *      using ``ringbuf_enqueue()`` or ``ringbuf_enqueue_bulk()``
  *      is "single-producer". Otherwise, it is "multi-producers".
  *    - RING_F_SC_DEQ: If this flag is set, the default behavior when
- *      using ``libringbuf_dequeue()`` or ``libringbuf_dequeue_bulk()``
+ *      using ``ringbuf_dequeue()`` or ``ringbuf_dequeue_bulk()``
  *      is "single-consumer". Otherwise, it is "multi-consumers".
  * @return
  *   On success, the pointer to the new allocated ring. NULL on error with
@@ -242,14 +305,14 @@ int libringbuf_init(struct ringbuf *r, unsigned count,
  *    - EEXIST - a memzone with the same name already exists
  *    - ENOMEM - no appropriate memory area found in which to create memzone
  */
-struct ringbuf *libringbuf_create(unsigned count, unsigned flags);
+struct ringbuf *ringbuf_create(unsigned count, unsigned flags);
 /**
  * De-allocate all memory used by the ring.
  *
  * @param r
  *   Ring to free
  */
-void libringbuf_free(struct ringbuf *r);
+void ringbuf_free(struct ringbuf *r);
 
 /**
  * Change the high water mark.
@@ -269,7 +332,7 @@ void libringbuf_free(struct ringbuf *r);
  *   - 0: Success; water mark changed.
  *   - -EINVAL: Invalid water mark value.
  */
-int libringbuf_set_water_mark(struct ringbuf *r, unsigned count);
+int ringbuf_set_water_mark(struct ringbuf *r, unsigned count);
 
 /**
  * Dump the status of the ring to a file.
@@ -279,14 +342,137 @@ int libringbuf_set_water_mark(struct ringbuf *r, unsigned count);
  * @param r
  *   A pointer to the ring structure.
  */
-void libringbuf_dump(FILE *f, const struct ringbuf *r);
+void ringbuf_dump(FILE *f, const struct ringbuf *r);
+
+static inline void
+__ringbuf_enqueue_elems_32(struct ringbuf *r, const uint32_t size,
+		uint32_t idx, const void *obj_table, uint32_t n)
+{
+	unsigned int i;
+	uint32_t *ring = (uint32_t *)r->ring;
+	const uint32_t *obj = (const uint32_t *)obj_table;
+	if (likely(idx + n < size)) {
+		for (i = 0; i < (n & ~0x7); i += 8, idx += 8) {
+			ring[idx] = obj[i];
+			ring[idx + 1] = obj[i + 1];
+			ring[idx + 2] = obj[i + 2];
+			ring[idx + 3] = obj[i + 3];
+			ring[idx + 4] = obj[i + 4];
+			ring[idx + 5] = obj[i + 5];
+			ring[idx + 6] = obj[i + 6];
+			ring[idx + 7] = obj[i + 7];
+		}
+		switch (n & 0x7) {
+		case 7:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 6:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 5:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 4:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 3:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 2:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 1:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		}
+	} else {
+		for (i = 0; idx < size; i++, idx++)
+			ring[idx] = obj[i];
+		/* Start at the beginning */
+		for (idx = 0; i < n; i++, idx++)
+			ring[idx] = obj[i];
+	}
+}
+
+static inline void
+__ringbuf_enqueue_elems_64(struct ringbuf *r, uint32_t prod_head,
+		const void *obj_table, uint32_t n)
+{
+	unsigned int i;
+	const uint32_t size = r->size;
+	uint32_t idx = prod_head & r->mask;
+	uint64_t *ring = (uint64_t *)&r[1];
+	const uint64_t *obj = (const uint64_t *)obj_table;
+	if (likely(idx + n < size)) {
+		for (i = 0; i < (n & ~0x3); i += 4, idx += 4) {
+			ring[idx] = obj[i];
+			ring[idx + 1] = obj[i + 1];
+			ring[idx + 2] = obj[i + 2];
+			ring[idx + 3] = obj[i + 3];
+		}
+		switch (n & 0x3) {
+		case 3:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 2:
+			ring[idx++] = obj[i++]; /* fallthrough */
+		case 1:
+			ring[idx++] = obj[i++];
+		}
+	} else {
+		for (i = 0; idx < size; i++, idx++)
+			ring[idx] = obj[i];
+		/* Start at the beginning */
+		for (idx = 0; i < n; i++, idx++)
+			ring[idx] = obj[i];
+	}
+}
+
+static inline void
+__ringbuf_enqueue_elems(struct ringbuf *r, uint32_t prod_head,
+		const void *obj_table, uint32_t num)
+{
+    __ringbuf_enqueue_elems_64(r, prod_head, obj_table, num);
+}
+
+static inline void
+__ringbuf_dequeue_elems_64(struct ringbuf *r, uint32_t prod_head,
+		void *obj_table, uint32_t n)
+{
+	unsigned int i;
+	const uint32_t size = r->size;
+	uint32_t idx = prod_head & r->mask;
+	uint64_t *ring = (uint64_t *)&r[1];
+	uint64_t *obj = (uint64_t *)obj_table;
+	if (likely(idx + n < size)) {
+		for (i = 0; i < (n & ~0x3); i += 4, idx += 4) {
+			obj[i] = ring[idx];
+			obj[i + 1] = ring[idx + 1];
+			obj[i + 2] = ring[idx + 2];
+			obj[i + 3] = ring[idx + 3];
+		}
+		switch (n & 0x3) {
+		case 3:
+			obj[i++] = ring[idx++]; /* fallthrough */
+		case 2:
+			obj[i++] = ring[idx++]; /* fallthrough */
+		case 1:
+			obj[i++] = ring[idx++]; /* fallthrough */
+		}
+	} else {
+		for (i = 0; idx < size; i++, idx++)
+			obj[i] = ring[idx];
+		/* Start at the beginning */
+		for (idx = 0; i < n; i++, idx++)
+			obj[i] = ring[idx];
+	}
+}
+
+static inline void
+__ringbuf_dequeue_elems(struct ringbuf *r, uint32_t cons_head,
+		void *obj_table, uint32_t num)
+{
+	__ringbuf_dequeue_elems_64(r, cons_head, obj_table, num);
+}
 
 /* the actual enqueue of pointers on the ring.
  * Placed here since identical code needed in both
  * single and multi producer enqueue functions */
 #define ENQUEUE_PTRS() do { \
-	const uint32_t size = r->prod.size; \
-	uint32_t idx = prod_head & mask; \
+	const uint32_t size = r->size; \
+	uint32_t idx = prod_head & r->mask; \
 	if (idx + n < size) { \
 		for (i = 0; i < (n & ((~(unsigned)0x3))); i+=4, idx+=4) { \
 			r->ring[idx] = obj_table[i]; \
@@ -312,7 +498,7 @@ void libringbuf_dump(FILE *f, const struct ringbuf *r);
  * single and multi consumer dequeue functions */
 #define DEQUEUE_PTRS() do { \
 	uint32_t idx = cons_head & mask; \
-	const uint32_t size = r->cons.size; \
+	const uint32_t size = r->size; \
 	if (idx + n < size) { \
 		for (i = 0; i < (n & (~(unsigned)0x3)); i+=4, idx+=4) {\
 			obj_table[i] = r->ring[idx]; \
@@ -333,6 +519,188 @@ void libringbuf_dump(FILE *f, const struct ringbuf *r);
 	} \
 } while (0)
 
+static inline void
+__ringbuf_update_prod_tail(struct ringbuf *r, uint32_t old_val,
+		uint32_t new_val, uint32_t single, uint32_t enqueue)
+{
+	RINGBUF_SET_USED(enqueue);
+
+	/*
+	 * If there are other enqueues/dequeues in progress that preceded us,
+	 * we need to wait for them to complete
+	 */
+	if (!single)
+		while (unlikely(r->prod.tail != old_val))
+			_mm_pause();
+
+	__atomic_store_n(&r->prod.tail, new_val, __ATOMIC_RELEASE);
+}
+
+static inline void
+__ringbuf_update_cons_tail(struct ringbuf *r, uint32_t old_val,
+		uint32_t new_val, uint32_t single, uint32_t enqueue)
+{
+	RINGBUF_SET_USED(enqueue);
+
+	/*
+	 * If there are other enqueues/dequeues in progress that preceded us,
+	 * we need to wait for them to complete
+	 */
+	if (!single)
+		while (unlikely(r->cons.tail != old_val))
+			_mm_pause();
+
+	__atomic_store_n(&r->cons.tail, new_val, __ATOMIC_RELEASE);
+}
+
+static inline unsigned int
+__ringbuf_move_prod_head(struct ringbuf *r, unsigned int is_sp,
+		unsigned int n, enum ringbuf_queue_behavior behavior,
+		uint32_t *old_head, uint32_t *new_head,
+		uint32_t *free_entries)
+{
+	const uint32_t capacity = r->capacity;
+	uint32_t cons_tail;
+	unsigned int max = n;
+	int success;
+
+	*old_head = __atomic_load_n(&r->prod.head, __ATOMIC_RELAXED);
+	do {
+		/* Reset n to the initial burst count */
+		n = max;
+
+		/* Ensure the head is read before tail */
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+		/* load-acquire synchronize with store-release of ht->tail
+		 * in update_tail.
+		 */
+		cons_tail = __atomic_load_n(&r->cons.tail,
+					__ATOMIC_ACQUIRE);
+
+		/* The subtraction is done between two unsigned 32bits value
+		 * (the result is always modulo 32 bits even if we have
+		 * *old_head > cons_tail). So 'free_entries' is always between 0
+		 * and capacity (which is < size).
+		 */
+		*free_entries = (capacity + cons_tail - *old_head);
+
+		/* check that we have enough room in ring */
+		if (unlikely(n > *free_entries))
+			n = (behavior == RINGBUF_QUEUE_FIXED) ?
+					0 : *free_entries;
+
+		if (n == 0)
+			return 0;
+
+		*new_head = *old_head + n;
+		if (is_sp)
+			r->prod.head = *new_head, success = 1;
+		else
+			/* on failure, *old_head is updated */
+			success = __atomic_compare_exchange_n(&r->prod.head,
+					old_head, *new_head,
+					0, __ATOMIC_RELAXED,
+					__ATOMIC_RELAXED);
+	} while (unlikely(success == 0));
+	return n;
+}
+
+static inline unsigned int
+__ringbuf_do_enqueue_elem(struct ringbuf *r, const void *obj_table, unsigned int n,
+		enum ringbuf_queue_behavior behavior, unsigned int is_sp)
+{
+	uint32_t prod_head, prod_next;
+	uint32_t free_entries;
+
+	n = __ringbuf_move_prod_head(r, is_sp, n, behavior,
+			&prod_head, &prod_next, &free_entries);
+	if (n == 0)
+		goto end;
+
+	__ringbuf_enqueue_elems(r, prod_head, obj_table, n);
+
+	__ringbuf_update_prod_tail(r, prod_head, prod_next, is_sp, 1);
+end:
+	// if (free_space != NULL)
+	// 	*free_space = free_entries - n;
+	return n;
+}
+
+static inline unsigned int
+__ringbuf_move_cons_head(struct ringbuf *r, int is_sc,
+		unsigned int n, enum ringbuf_queue_behavior behavior,
+		uint32_t *old_head, uint32_t *new_head,
+		uint32_t *entries)
+{
+	unsigned int max = n;
+	uint32_t prod_tail;
+	int success;
+
+	/* move cons.head atomically */
+	*old_head = __atomic_load_n(&r->cons.head, __ATOMIC_RELAXED);
+	do {
+		/* Restore n as it may change every loop */
+		n = max;
+
+		/* Ensure the head is read before tail */
+		__atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+		/* this load-acquire synchronize with store-release of ht->tail
+		 * in update_tail.
+		 */
+		prod_tail = __atomic_load_n(&r->prod.tail,
+					__ATOMIC_ACQUIRE);
+
+		/* The subtraction is done between two unsigned 32bits value
+		 * (the result is always modulo 32 bits even if we have
+		 * cons_head > prod_tail). So 'entries' is always between 0
+		 * and size(ring)-1.
+		 */
+		*entries = (prod_tail - *old_head);
+
+		/* Set the actual entries for dequeue */
+		if (n > *entries)
+			n = (behavior == RINGBUF_QUEUE_FIXED) ? 0 : *entries;
+
+		if (unlikely(n == 0))
+			return 0;
+
+		*new_head = *old_head + n;
+		if (is_sc)
+			r->cons.head = *new_head, success = 1;
+		else
+			/* on failure, *old_head will be updated */
+			success = __atomic_compare_exchange_n(&r->cons.head,
+							old_head, *new_head,
+							0, __ATOMIC_RELAXED,
+							__ATOMIC_RELAXED);
+	} while (unlikely(success == 0));
+	return n;
+}
+
+static inline unsigned int
+__ringbuf_do_dequeue_elem(struct ringbuf *r, void *obj_table, unsigned int n,
+		enum ringbuf_queue_behavior behavior, unsigned int is_sc)
+{
+	uint32_t cons_head, cons_next;
+	uint32_t entries;
+
+	n = __ringbuf_move_cons_head(r, (int)is_sc, n, behavior,
+			&cons_head, &cons_next, &entries);
+	if (n == 0)
+		goto end;
+
+	__ringbuf_dequeue_elems(r, cons_head, obj_table, n);
+
+	__ringbuf_update_cons_tail(r, cons_head, cons_next, is_sc, 0);
+
+end:
+	// if (available != NULL)
+	// 	*available = entries - n;
+	return n;
+}
+
 /**
  * @internal Enqueue several objects on the ring (multi-producers safe).
  *
@@ -352,97 +720,15 @@ void libringbuf_dump(FILE *f, const struct ringbuf *r);
  *   Depend on the behavior value
  *   if behavior = RINGBUF_QUEUE_FIXED
  *   - 0: Success; objects enqueue.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue, no object is enqueued.
  *   if behavior = RINGBUF_QUEUE_VARIABLE
  *   - n: Actual number of objects enqueued.
  */
 static inline int __attribute__((always_inline))
-__libringbuf_mp_do_enqueue(struct ringbuf *r, void * const *obj_table,
-			 unsigned n, enum libringbuf_queue_behavior behavior)
+__ringbuf_mp_do_enqueue(struct ringbuf *r, void * const *obj_table,
+			 unsigned n, enum ringbuf_queue_behavior behavior)
 {
-	uint32_t prod_head, prod_next;
-	uint32_t cons_tail, free_entries;
-	const unsigned max = n;
-	int success;
-	unsigned i, rep = 0;
-	uint32_t mask = r->prod.mask;
-	int ret;
-
-	/* Avoid the unnecessary cmpset operation below, which is also
-	 * potentially harmful when n equals 0. */
-	if (n == 0)
-		return 0;
-
-	/* move prod.head atomically */
-	do {
-		/* Reset n to the initial burst count */
-		n = max;
-
-		prod_head = r->prod.head;
-		cons_tail = r->cons.tail;
-		/* The subtraction is done between two unsigned 32bits value
-		 * (the result is always modulo 32 bits even if we have
-		 * prod_head > cons_tail). So 'free_entries' is always between 0
-		 * and size(ring)-1. */
-		free_entries = (mask + cons_tail - prod_head);
-
-		/* check that we have enough room in ring */
-		if ((n > free_entries)) {
-			if (behavior == RINGBUF_QUEUE_FIXED) {
-				__RING_STAT_ADD(r, enq_fail, n);
-				return -ENOBUFS;
-			}
-			else {
-				/* No free entry available */
-				if (free_entries == 0) {
-					__RING_STAT_ADD(r, enq_fail, n);
-					return 0;
-				}
-
-				n = free_entries;
-			}
-		}
-
-		prod_next = prod_head + n;
-		success = __atomic32_cmpset(&r->prod.head, prod_head,
-					      prod_next);
-	} while (success == 0);
-
-	/* write entries in ring */
-	ENQUEUE_PTRS();
-	__compiler_barrier();
-
-	/* if we exceed the watermark */
-	if ((((mask + 1) - free_entries + n) > r->prod.watermark)) {
-		ret = (behavior == RINGBUF_QUEUE_FIXED) ? -EDQUOT :
-				(int)(n | RINGBUF_QUOT_EXCEED);
-		__RING_STAT_ADD(r, enq_quota, n);
-	}
-	else {
-		ret = (behavior == RINGBUF_QUEUE_FIXED) ? 0 : n;
-		__RING_STAT_ADD(r, enq_success, n);
-	}
-
-	/*
-	 * If there are other enqueues in progress that preceded us,
-	 * we need to wait for them to complete
-	 */
-	while ((r->prod.tail != prod_head)) {
-		__builtin_ia32_pause();
-
-		/* Set RINGBUF_PAUSE_REP_COUNT to avoid spin too long waiting
-		 * for other thread finish. It gives pre-empted thread a chance
-		 * to proceed and finish with ring dequeue operation. */
-		if (RINGBUF_PAUSE_REP_COUNT &&
-		    ++rep == RINGBUF_PAUSE_REP_COUNT) {
-			rep = 0;
-			//sched_yield();
-		}
-	}
-	r->prod.tail = prod_next;
-	return ret;
+	return __ringbuf_do_enqueue_elem(r, obj_table, n, behavior, 0);
 }
 
 /**
@@ -461,67 +747,15 @@ __libringbuf_mp_do_enqueue(struct ringbuf *r, void * const *obj_table,
  *   Depend on the behavior value
  *   if behavior = RINGBUF_QUEUE_FIXED
  *   - 0: Success; objects enqueue.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue, no object is enqueued.
  *   if behavior = RINGBUF_QUEUE_VARIABLE
  *   - n: Actual number of objects enqueued.
  */
 static inline int __attribute__((always_inline))
-__libringbuf_sp_do_enqueue(struct ringbuf *r, void * const *obj_table,
-			 unsigned n, enum libringbuf_queue_behavior behavior)
+__ringbuf_sp_do_enqueue(struct ringbuf *r, void * const *obj_table,
+			 unsigned n, enum ringbuf_queue_behavior behavior)
 {
-	uint32_t prod_head, cons_tail;
-	uint32_t prod_next, free_entries;
-	unsigned i;
-	uint32_t mask = r->prod.mask;
-	int ret;
-
-	prod_head = r->prod.head;
-	cons_tail = r->cons.tail;
-	/* The subtraction is done between two unsigned 32bits value
-	 * (the result is always modulo 32 bits even if we have
-	 * prod_head > cons_tail). So 'free_entries' is always between 0
-	 * and size(ring)-1. */
-	free_entries = mask + cons_tail - prod_head;
-
-	/* check that we have enough room in ring */
-	if ((n > free_entries)) {
-		if (behavior == RINGBUF_QUEUE_FIXED) {
-			__RING_STAT_ADD(r, enq_fail, n);
-			return -ENOBUFS;
-		}
-		else {
-			/* No free entry available */
-			if (free_entries == 0) {
-				__RING_STAT_ADD(r, enq_fail, n);
-				return 0;
-			}
-
-			n = free_entries;
-		}
-	}
-
-	prod_next = prod_head + n;
-	r->prod.head = prod_next;
-
-	/* write entries in ring */
-	ENQUEUE_PTRS();
-	__compiler_barrier();
-
-	/* if we exceed the watermark */
-	if ((((mask + 1) - free_entries + n) > r->prod.watermark)) {
-		ret = (behavior == RINGBUF_QUEUE_FIXED) ? -EDQUOT :
-			(int)(n | RINGBUF_QUOT_EXCEED);
-		__RING_STAT_ADD(r, enq_quota, n);
-	}
-	else {
-		ret = (behavior == RINGBUF_QUEUE_FIXED) ? 0 : n;
-		__RING_STAT_ADD(r, enq_success, n);
-	}
-
-	r->prod.tail = prod_next;
-	return ret;
+	return __ringbuf_do_enqueue_elem(r, obj_table, n, behavior, 1);
 }
 
 /**
@@ -552,79 +786,10 @@ __libringbuf_sp_do_enqueue(struct ringbuf *r, void * const *obj_table,
  */
 
 static inline int __attribute__((always_inline))
-__libringbuf_mc_do_dequeue(struct ringbuf *r, void **obj_table,
-		 unsigned n, enum libringbuf_queue_behavior behavior)
+__ringbuf_mc_do_dequeue(struct ringbuf *r, void **obj_table,
+		 unsigned n, enum ringbuf_queue_behavior behavior)
 {
-	uint32_t cons_head, prod_tail;
-	uint32_t cons_next, entries;
-	const unsigned max = n;
-	int success;
-	unsigned i, rep = 0;
-	uint32_t mask = r->prod.mask;
-
-	/* Avoid the unnecessary cmpset operation below, which is also
-	 * potentially harmful when n equals 0. */
-	if (n == 0)
-		return 0;
-
-	/* move cons.head atomically */
-	do {
-		/* Restore n as it may change every loop */
-		n = max;
-
-		cons_head = r->cons.head;
-		prod_tail = r->prod.tail;
-		/* The subtraction is done between two unsigned 32bits value
-		 * (the result is always modulo 32 bits even if we have
-		 * cons_head > prod_tail). So 'entries' is always between 0
-		 * and size(ring)-1. */
-		entries = (prod_tail - cons_head);
-
-		/* Set the actual entries for dequeue */
-		if (n > entries) {
-			if (behavior == RINGBUF_QUEUE_FIXED) {
-				__RING_STAT_ADD(r, deq_fail, n);
-				return -ENOENT;
-			}
-			else {
-				if (entries == 0){
-					__RING_STAT_ADD(r, deq_fail, n);
-					return 0;
-				}
-
-				n = entries;
-			}
-		}
-
-		cons_next = cons_head + n;
-		success = __atomic32_cmpset(&r->cons.head, cons_head,
-					      cons_next);
-	} while (success == 0);
-
-	/* copy in table */
-	DEQUEUE_PTRS();
-	__compiler_barrier();
-
-	/*
-	 * If there are other dequeues in progress that preceded us,
-	 * we need to wait for them to complete
-	 */
-	while ((r->cons.tail != cons_head)) {
-		__builtin_ia32_pause();
-
-		/* Set RINGBUF_PAUSE_REP_COUNT to avoid spin too long waiting
-		 * for other thread finish. It gives pre-empted thread a chance
-		 * to proceed and finish with ring dequeue operation. */
-		if (RINGBUF_PAUSE_REP_COUNT &&
-		    ++rep == RINGBUF_PAUSE_REP_COUNT) {
-			rep = 0;
-			//sched_yield();
-		}
-	}
-	__RING_STAT_ADD(r, deq_success, n);
-	r->cons.tail = cons_next;
-
-	return behavior == RINGBUF_QUEUE_FIXED ? 0 : n;
+    return __ringbuf_do_dequeue_elem(r, obj_table, n, behavior, 0);
 }
 
 /**
@@ -651,47 +816,10 @@ __libringbuf_mc_do_dequeue(struct ringbuf *r, void **obj_table,
  *   - n: Actual number of objects dequeued.
  */
 static inline int __attribute__((always_inline))
-__libringbuf_sc_do_dequeue(struct ringbuf *r, void **obj_table,
-		 unsigned n, enum libringbuf_queue_behavior behavior)
+__ringbuf_sc_do_dequeue(struct ringbuf *r, void **obj_table,
+		 unsigned n, enum ringbuf_queue_behavior behavior)
 {
-	uint32_t cons_head, prod_tail;
-	uint32_t cons_next, entries;
-	unsigned i;
-	uint32_t mask = r->prod.mask;
-
-	cons_head = r->cons.head;
-	prod_tail = r->prod.tail;
-	/* The subtraction is done between two unsigned 32bits value
-	 * (the result is always modulo 32 bits even if we have
-	 * cons_head > prod_tail). So 'entries' is always between 0
-	 * and size(ring)-1. */
-	entries = prod_tail - cons_head;
-
-	if (n > entries) {
-		if (behavior == RINGBUF_QUEUE_FIXED) {
-			__RING_STAT_ADD(r, deq_fail, n);
-			return -ENOENT;
-		}
-		else {
-			if (entries == 0){
-				__RING_STAT_ADD(r, deq_fail, n);
-				return 0;
-			}
-
-			n = entries;
-		}
-	}
-
-	cons_next = cons_head + n;
-	r->cons.head = cons_next;
-
-	/* copy in table */
-	DEQUEUE_PTRS();
-	__compiler_barrier();
-
-	__RING_STAT_ADD(r, deq_success, n);
-	r->cons.tail = cons_next;
-	return behavior == RINGBUF_QUEUE_FIXED ? 0 : n;
+    return __ringbuf_do_dequeue_elem(r, obj_table, n, behavior, 1);
 }
 
 /**
@@ -708,15 +836,13 @@ __libringbuf_sc_do_dequeue(struct ringbuf *r, void **obj_table,
  *   The number of objects to add in the ring from the obj_table.
  * @return
  *   - 0: Success; objects enqueue.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue, no object is enqueued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_mp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
+ringbuf_mp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
-	return __libringbuf_mp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_FIXED);
+	return __ringbuf_mp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_FIXED) ? 0 : -ENOBUFS;
 }
 
 /**
@@ -730,15 +856,13 @@ libringbuf_mp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
  *   The number of objects to add in the ring from the obj_table.
  * @return
  *   - 0: Success; objects enqueued.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_sp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
+ringbuf_sp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
-	return __libringbuf_sp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_FIXED);
+	return __ringbuf_sp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_FIXED) ? 0 : -ENOBUFS;
 }
 
 /**
@@ -756,18 +880,16 @@ libringbuf_sp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
  *   The number of objects to add in the ring from the obj_table.
  * @return
  *   - 0: Success; objects enqueued.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
+ringbuf_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
 		      unsigned n)
 {
 	if (r->prod.sp_enqueue)
-		return libringbuf_sp_enqueue_bulk(r, obj_table, n);
+		return ringbuf_sp_enqueue_bulk(r, obj_table, n);
 	else
-		return libringbuf_mp_enqueue_bulk(r, obj_table, n);
+		return ringbuf_mp_enqueue_bulk(r, obj_table, n);
 }
 
 /**
@@ -782,14 +904,12 @@ libringbuf_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
  *   A pointer to the object to be added.
  * @return
  *   - 0: Success; objects enqueued.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_mp_enqueue(struct ringbuf *r, void *obj)
+ringbuf_mp_enqueue(struct ringbuf *r, void *obj)
 {
-	return libringbuf_mp_enqueue_bulk(r, &obj, 1);
+	return ringbuf_mp_enqueue_bulk(r, &obj, 1);
 }
 
 /**
@@ -801,14 +921,12 @@ libringbuf_mp_enqueue(struct ringbuf *r, void *obj)
  *   A pointer to the object to be added.
  * @return
  *   - 0: Success; objects enqueued.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_sp_enqueue(struct ringbuf *r, void *obj)
+ringbuf_sp_enqueue(struct ringbuf *r, void *obj)
 {
-	return libringbuf_sp_enqueue_bulk(r, &obj, 1);
+	return ringbuf_sp_enqueue_bulk(r, &obj, 1);
 }
 
 /**
@@ -824,17 +942,15 @@ libringbuf_sp_enqueue(struct ringbuf *r, void *obj)
  *   A pointer to the object to be added.
  * @return
  *   - 0: Success; objects enqueued.
- *   - -EDQUOT: Quota exceeded. The objects have been enqueued, but the
- *     high water mark is exceeded.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_enqueue(struct ringbuf *r, void *obj)
+ringbuf_enqueue(struct ringbuf *r, void *obj)
 {
 	if (r->prod.sp_enqueue)
-		return libringbuf_sp_enqueue(r, obj);
+		return ringbuf_sp_enqueue(r, obj);
 	else
-		return libringbuf_mp_enqueue(r, obj);
+		return ringbuf_mp_enqueue(r, obj);
 }
 
 /**
@@ -855,9 +971,9 @@ libringbuf_enqueue(struct ringbuf *r, void *obj)
  *     dequeued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_mc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
+ringbuf_mc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
 {
-	return __libringbuf_mc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_FIXED);
+	return __ringbuf_mc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_FIXED) ? 0 : -ENOENT;
 }
 
 /**
@@ -876,9 +992,9 @@ libringbuf_mc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
  *     dequeued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_sc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
+ringbuf_sc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
 {
-	return __libringbuf_sc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_FIXED);
+	return __ringbuf_sc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_FIXED) ? 0 : -ENOENT;
 }
 
 /**
@@ -900,12 +1016,12 @@ libringbuf_sc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
  *     dequeued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
+ringbuf_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	if (r->cons.sc_dequeue)
-		return libringbuf_sc_dequeue_bulk(r, obj_table, n);
+		return ringbuf_sc_dequeue_bulk(r, obj_table, n);
 	else
-		return libringbuf_mc_dequeue_bulk(r, obj_table, n);
+		return ringbuf_mc_dequeue_bulk(r, obj_table, n);
 }
 
 /**
@@ -924,9 +1040,9 @@ libringbuf_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
  *     dequeued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_mc_dequeue(struct ringbuf *r, void **obj_p)
+ringbuf_mc_dequeue(struct ringbuf *r, void **obj_p)
 {
-	return libringbuf_mc_dequeue_bulk(r, obj_p, 1);
+	return ringbuf_mc_dequeue_bulk(r, obj_p, 1);
 }
 
 /**
@@ -942,9 +1058,9 @@ libringbuf_mc_dequeue(struct ringbuf *r, void **obj_p)
  *     dequeued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_sc_dequeue(struct ringbuf *r, void **obj_p)
+ringbuf_sc_dequeue(struct ringbuf *r, void **obj_p)
 {
-	return libringbuf_sc_dequeue_bulk(r, obj_p, 1);
+	return ringbuf_sc_dequeue_bulk(r, obj_p, 1);
 }
 
 /**
@@ -964,12 +1080,12 @@ libringbuf_sc_dequeue(struct ringbuf *r, void **obj_p)
  *     dequeued.
  */
 static inline int __attribute__((always_inline))
-libringbuf_dequeue(struct ringbuf *r, void **obj_p)
+ringbuf_dequeue(struct ringbuf *r, void **obj_p)
 {
 	if (r->cons.sc_dequeue)
-		return libringbuf_sc_dequeue(r, obj_p);
+		return ringbuf_sc_dequeue(r, obj_p);
 	else
-		return libringbuf_mc_dequeue(r, obj_p);
+		return ringbuf_mc_dequeue(r, obj_p);
 }
 
 /**
@@ -982,11 +1098,11 @@ libringbuf_dequeue(struct ringbuf *r, void **obj_p)
  *   - 0: The ring is not full.
  */
 static inline int
-libringbuf_full(const struct ringbuf *r)
+ringbuf_full(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
 	uint32_t cons_tail = r->cons.tail;
-	return ((cons_tail - prod_tail - 1) & r->prod.mask) == 0;
+	return ((cons_tail - prod_tail - 1) & r->mask) == 0;
 }
 
 /**
@@ -999,7 +1115,7 @@ libringbuf_full(const struct ringbuf *r)
  *   - 0: The ring is not empty.
  */
 static inline int
-libringbuf_empty(const struct ringbuf *r)
+ringbuf_empty(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
 	uint32_t cons_tail = r->cons.tail;
@@ -1015,11 +1131,11 @@ libringbuf_empty(const struct ringbuf *r)
  *   The number of entries in the ring.
  */
 static inline unsigned
-libringbuf_count(const struct ringbuf *r)
+ringbuf_count(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
 	uint32_t cons_tail = r->cons.tail;
-	return (prod_tail - cons_tail) & r->prod.mask;
+	return (prod_tail - cons_tail) & r->mask;
 }
 
 /**
@@ -1031,20 +1147,42 @@ libringbuf_count(const struct ringbuf *r)
  *   The number of free entries in the ring.
  */
 static inline unsigned
-libringbuf_free_count(const struct ringbuf *r)
+ringbuf_free_count(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
 	uint32_t cons_tail = r->cons.tail;
-	return (cons_tail - prod_tail - 1) & r->prod.mask;
+	return (cons_tail - prod_tail - 1) & r->mask;
 }
 
 /**
- * Dump the status of all rings on the console
+ * Return the size of the ring.
  *
- * @param f
- *   A pointer to a file for output
+ * @param r
+ *   A pointer to the ring structure.
+ * @return
+ *   The size of the data store used by the ring.
+ *   NOTE: this is not the same as the usable space in the ring. To query that
+ *   use ``ringbuf_get_capacity()``.
  */
-void libringbuf_list_dump(FILE *f);
+static inline unsigned int
+ringbuf_get_size(const struct ringbuf *r)
+{
+	return r->size;
+}
+
+/**
+ * Return the number of elements which can be stored in the ring.
+ *
+ * @param r
+ *   A pointer to the ring structure.
+ * @return
+ *   The usable size of the ring.
+ */
+static inline unsigned int
+ringbuf_get_capacity(const struct ringbuf *r)
+{
+	return r->capacity;
+}
 
 /**
  * Enqueue several objects on the ring (multi-producers safe).
@@ -1062,10 +1200,10 @@ void libringbuf_list_dump(FILE *f);
  *   - n: Actual number of objects enqueued.
  */
 static inline unsigned __attribute__((always_inline))
-libringbuf_mp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
+ringbuf_mp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
-	return __libringbuf_mp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
+	return __ringbuf_mp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
 }
 
 /**
@@ -1081,10 +1219,10 @@ libringbuf_mp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
  *   - n: Actual number of objects enqueued.
  */
 static inline unsigned __attribute__((always_inline))
-libringbuf_sp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
+ringbuf_sp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
-	return __libringbuf_sp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
+	return __ringbuf_sp_do_enqueue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
 }
 
 /**
@@ -1104,13 +1242,13 @@ libringbuf_sp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
  *   - n: Actual number of objects enqueued.
  */
 static inline unsigned __attribute__((always_inline))
-libringbuf_enqueue_burst(struct ringbuf *r, void * const *obj_table,
+ringbuf_enqueue_burst(struct ringbuf *r, void * const *obj_table,
 		      unsigned n)
 {
 	if (r->prod.sp_enqueue)
-		return libringbuf_sp_enqueue_burst(r, obj_table, n);
+		return ringbuf_sp_enqueue_burst(r, obj_table, n);
 	else
-		return libringbuf_mp_enqueue_burst(r, obj_table, n);
+		return ringbuf_mp_enqueue_burst(r, obj_table, n);
 }
 
 /**
@@ -1131,9 +1269,9 @@ libringbuf_enqueue_burst(struct ringbuf *r, void * const *obj_table,
  *   - n: Actual number of objects dequeued, 0 if ring is empty
  */
 static inline unsigned __attribute__((always_inline))
-libringbuf_mc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
+ringbuf_mc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
 {
-	return __libringbuf_mc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
+	return __ringbuf_mc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
 }
 
 /**
@@ -1151,9 +1289,9 @@ libringbuf_mc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
  *   - n: Actual number of objects dequeued, 0 if ring is empty
  */
 static inline unsigned __attribute__((always_inline))
-libringbuf_sc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
+ringbuf_sc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
 {
-	return __libringbuf_sc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
+	return __ringbuf_sc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
 }
 
 /**
@@ -1173,13 +1311,27 @@ libringbuf_sc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
  *   - Number of objects dequeued
  */
 static inline unsigned __attribute__((always_inline))
-libringbuf_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
+ringbuf_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	if (r->cons.sc_dequeue)
-		return libringbuf_sc_dequeue_burst(r, obj_table, n);
+		return ringbuf_sc_dequeue_burst(r, obj_table, n);
 	else
-		return libringbuf_mc_dequeue_burst(r, obj_table, n);
+		return ringbuf_mc_dequeue_burst(r, obj_table, n);
 }
+
+/**
+ * Flush a ring.
+ *
+ * This function flush all the elements in a ring
+ *
+ * @warning
+ * Make sure the ring is not in use while calling this function.
+ *
+ * @param r
+ *   A pointer to the ring structure.
+ */
+void
+ringbuf_reset(struct ringbuf *r);
 
 #ifdef __cplusplus
 }

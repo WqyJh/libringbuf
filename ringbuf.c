@@ -63,6 +63,7 @@
  *
  ***************************************************************************/
 
+#include <malloc.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -70,8 +71,9 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <errno.h>
+#include <memory.h>
 
-#include "libringbuf.h"
+#include "ringbuf.h"
 
 /* true if x is a power of 2 */
 #define POWEROF2(x) ((((x)-1) & (x)) == 0)
@@ -81,7 +83,7 @@
 
 /* return the size of memory occupied by a ring */
 ssize_t
-libringbuf_get_memsize(unsigned count)
+ringbuf_get_memsize(unsigned count)
 {
 	ssize_t sz;
 
@@ -98,38 +100,49 @@ libringbuf_get_memsize(unsigned count)
 }
 
 int
-libringbuf_init(struct ringbuf *r, unsigned count,
+ringbuf_init(struct ringbuf *r, unsigned count,
 	unsigned flags)
 {
 	/* init the ring structure */
 	memset(r, 0, sizeof(*r));
 	r->flags = flags;
-	r->prod.watermark = count;
 	r->prod.sp_enqueue = !!(flags & RING_F_SP_ENQ);
 	r->cons.sc_dequeue = !!(flags & RING_F_SC_DEQ);
-	r->prod.size = r->cons.size = count;
-	r->prod.mask = r->cons.mask = count-1;
-	r->prod.head = r->cons.head = 0;
-	r->prod.tail = r->cons.tail = 0;
+
+    if (flags & RING_F_EXACT_SZ) {
+		r->size = __align32prevpow2(count + 1);
+		r->mask = r->size - 1;
+		r->capacity = count;
+	} else {
+		if ((!POWEROF2(count)) || (count > RINGBUF_SZ_MASK)) {
+			fprintf(stderr,
+				"Requested size is invalid, must be power of 2, and not exceed the size limit %u\n",
+				RINGBUF_SZ_MASK);
+			return -EINVAL;
+		}
+		r->size = count;
+		r->mask = count - 1;
+		r->capacity = r->mask;
+	}
 
 	return 0;
 }
 
 /* create the ring */
 struct ringbuf *
-libringbuf_create(unsigned count, unsigned flags)
+ringbuf_create(unsigned count, unsigned flags)
 {
 	struct ringbuf *r;
 	ssize_t ring_size;
 
-	ring_size = libringbuf_get_memsize(count);
+	ring_size = ringbuf_get_memsize(count);
 	if (ring_size < 0) {
 		return NULL;
 	}
 
-	r = (struct ringbuf *)malloc(ring_size);
+	r = (struct ringbuf *)memalign(CACHE_LINE_SIZE, ring_size);
 	if (r != NULL) {
-		libringbuf_init(r, count, flags);
+		ringbuf_init(r, count, flags);
 	} else {
 		r = NULL;
 		printf("ringbuf Cannot reserve memory\n");
@@ -140,28 +153,29 @@ libringbuf_create(unsigned count, unsigned flags)
 
 /* free the ring */
 void
-libringbuf_free(struct ringbuf *r)
+ringbuf_free(struct ringbuf *r)
 {
 	if (r == NULL)
 		return;
 	free(r);
 }
 
-/*
- * change the high water mark. If *count* is 0, water marking is
- * disabled
- */
-int
-libringbuf_set_water_mark(struct ringbuf *r, unsigned count)
+void
+ringbuf_reset(struct ringbuf *r)
 {
-	if (count >= r->prod.size)
-		return -EINVAL;
-
-	/* if count is 0, disable the watermarking */
-	if (count == 0)
-		count = r->prod.size;
-
-	r->prod.watermark = count;
-	return 0;
+    r->prod.head = r->prod.tail = 0;
+    r->cons.head = r->cons.tail = 0;
 }
 
+/* dump the status of the ring on the console */
+void
+ringbuf_dump(FILE *f, const struct ringbuf *r)
+{
+	fprintf(f, "  flags=%x\n", r->flags);
+	fprintf(f, "  ct=%"PRIu32"\n", r->cons.tail);
+	fprintf(f, "  ch=%"PRIu32"\n", r->cons.head);
+	fprintf(f, "  pt=%"PRIu32"\n", r->prod.tail);
+	fprintf(f, "  ph=%"PRIu32"\n", r->prod.head);
+	fprintf(f, "  used=%u\n", ringbuf_count(r));
+	fprintf(f, "  avail=%u\n", ringbuf_free_count(r));
+}
