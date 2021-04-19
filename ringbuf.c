@@ -145,7 +145,7 @@ ringbuf_create(unsigned count, unsigned flags)
 		ringbuf_init(r, count, flags);
 	} else {
 		r = NULL;
-		printf("ringbuf Cannot reserve memory\n");
+		printf("ringbuf Cannot allocate memory\n");
 	}
 
 	return r;
