@@ -134,6 +134,11 @@ ringbuf_create(unsigned count, unsigned flags)
 {
 	struct ringbuf *r;
 	ssize_t ring_size;
+	const unsigned int requested_count = count;
+
+    /* for an exact size ring, round up from count to a power of two */
+	if (flags & RING_F_EXACT_SZ)
+		count = __align32prevpow2(count + 1);
 
 	ring_size = ringbuf_get_memsize(count);
 	if (ring_size < 0) {
@@ -142,7 +147,7 @@ ringbuf_create(unsigned count, unsigned flags)
 
 	r = (struct ringbuf *)memalign(CACHE_LINE_SIZE, ring_size);
 	if (r != NULL) {
-		ringbuf_init(r, count, flags);
+		ringbuf_init(r, requested_count, flags);
 	} else {
 		r = NULL;
 		printf("ringbuf Cannot allocate memory\n");

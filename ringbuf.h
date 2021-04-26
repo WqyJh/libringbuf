@@ -467,58 +467,6 @@ __ringbuf_dequeue_elems(struct ringbuf *r, uint32_t cons_head,
 	__ringbuf_dequeue_elems_64(r, cons_head, obj_table, num);
 }
 
-/* the actual enqueue of pointers on the ring.
- * Placed here since identical code needed in both
- * single and multi producer enqueue functions */
-#define ENQUEUE_PTRS() do { \
-	const uint32_t size = r->size; \
-	uint32_t idx = prod_head & r->mask; \
-	if (idx + n < size) { \
-		for (i = 0; i < (n & ((~(unsigned)0x3))); i+=4, idx+=4) { \
-			r->ring[idx] = obj_table[i]; \
-			r->ring[idx+1] = obj_table[i+1]; \
-			r->ring[idx+2] = obj_table[i+2]; \
-			r->ring[idx+3] = obj_table[i+3]; \
-		} \
-		switch (n & 0x3) { \
-			case 3: r->ring[idx++] = obj_table[i++]; \
-			case 2: r->ring[idx++] = obj_table[i++]; \
-			case 1: r->ring[idx++] = obj_table[i++]; \
-		} \
-	} else { \
-		for (i = 0; idx < size; i++, idx++)\
-			r->ring[idx] = obj_table[i]; \
-		for (idx = 0; i < n; i++, idx++) \
-			r->ring[idx] = obj_table[i]; \
-	} \
-} while(0)
-
-/* the actual copy of pointers on the ring to obj_table.
- * Placed here since identical code needed in both
- * single and multi consumer dequeue functions */
-#define DEQUEUE_PTRS() do { \
-	uint32_t idx = cons_head & mask; \
-	const uint32_t size = r->size; \
-	if (idx + n < size) { \
-		for (i = 0; i < (n & (~(unsigned)0x3)); i+=4, idx+=4) {\
-			obj_table[i] = r->ring[idx]; \
-			obj_table[i+1] = r->ring[idx+1]; \
-			obj_table[i+2] = r->ring[idx+2]; \
-			obj_table[i+3] = r->ring[idx+3]; \
-		} \
-		switch (n & 0x3) { \
-			case 3: obj_table[i++] = r->ring[idx++]; \
-			case 2: obj_table[i++] = r->ring[idx++]; \
-			case 1: obj_table[i++] = r->ring[idx++]; \
-		} \
-	} else { \
-		for (i = 0; idx < size; i++, idx++) \
-			obj_table[i] = r->ring[idx]; \
-		for (idx = 0; i < n; i++, idx++) \
-			obj_table[i] = r->ring[idx]; \
-	} \
-} while (0)
-
 static inline void
 __ringbuf_update_prod_tail(struct ringbuf *r, uint32_t old_val,
 		uint32_t new_val, uint32_t single, uint32_t enqueue)
