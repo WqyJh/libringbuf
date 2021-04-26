@@ -111,7 +111,9 @@ extern "C" {
 
 #define RINGBUF_SET_USED(x) (void)(x)
 
-static inline int
+#define __rb_always_inline inline __attribute__((always_inline))
+
+static __rb_always_inline int
 __atomic32_cmpset(volatile uint32_t *dst, uint32_t exp, uint32_t src)
 {
 	uint8_t res;
@@ -139,7 +141,7 @@ __atomic32_cmpset(volatile uint32_t *dst, uint32_t exp, uint32_t src)
  * @return
  *    The combined value.
  */
-static inline uint32_t
+static __rb_always_inline uint32_t
 __combine32ms1b(uint32_t x)
 {
 	x |= x >> 1;
@@ -160,7 +162,7 @@ __combine32ms1b(uint32_t x)
  * @return
  *   Input parameter aligned to the previous power of 2
  */
-static inline uint32_t
+static __rb_always_inline uint32_t
 __align32prevpow2(uint32_t x)
 {
 	x = __combine32ms1b(x);
@@ -344,7 +346,7 @@ int ringbuf_set_water_mark(struct ringbuf *r, unsigned count);
  */
 void ringbuf_dump(FILE *f, const struct ringbuf *r);
 
-static inline void
+static __rb_always_inline void
 __ringbuf_enqueue_elems_32(struct ringbuf *r, const uint32_t size,
 		uint32_t idx, const void *obj_table, uint32_t n)
 {
@@ -387,7 +389,7 @@ __ringbuf_enqueue_elems_32(struct ringbuf *r, const uint32_t size,
 	}
 }
 
-static inline void
+static __rb_always_inline void
 __ringbuf_enqueue_elems_64(struct ringbuf *r, uint32_t prod_head,
 		const void *obj_table, uint32_t n)
 {
@@ -420,14 +422,14 @@ __ringbuf_enqueue_elems_64(struct ringbuf *r, uint32_t prod_head,
 	}
 }
 
-static inline void
+static __rb_always_inline void
 __ringbuf_enqueue_elems(struct ringbuf *r, uint32_t prod_head,
 		const void *obj_table, uint32_t num)
 {
     __ringbuf_enqueue_elems_64(r, prod_head, obj_table, num);
 }
 
-static inline void
+static __rb_always_inline void
 __ringbuf_dequeue_elems_64(struct ringbuf *r, uint32_t prod_head,
 		void *obj_table, uint32_t n)
 {
@@ -460,14 +462,14 @@ __ringbuf_dequeue_elems_64(struct ringbuf *r, uint32_t prod_head,
 	}
 }
 
-static inline void
+static __rb_always_inline void
 __ringbuf_dequeue_elems(struct ringbuf *r, uint32_t cons_head,
 		void *obj_table, uint32_t num)
 {
 	__ringbuf_dequeue_elems_64(r, cons_head, obj_table, num);
 }
 
-static inline void
+static __rb_always_inline void
 __ringbuf_update_prod_tail(struct ringbuf *r, uint32_t old_val,
 		uint32_t new_val, uint32_t single, uint32_t enqueue)
 {
@@ -484,7 +486,7 @@ __ringbuf_update_prod_tail(struct ringbuf *r, uint32_t old_val,
 	__atomic_store_n(&r->prod.tail, new_val, __ATOMIC_RELEASE);
 }
 
-static inline void
+static __rb_always_inline void
 __ringbuf_update_cons_tail(struct ringbuf *r, uint32_t old_val,
 		uint32_t new_val, uint32_t single, uint32_t enqueue)
 {
@@ -501,7 +503,7 @@ __ringbuf_update_cons_tail(struct ringbuf *r, uint32_t old_val,
 	__atomic_store_n(&r->cons.tail, new_val, __ATOMIC_RELEASE);
 }
 
-static inline unsigned int
+static __rb_always_inline unsigned int
 __ringbuf_move_prod_head(struct ringbuf *r, unsigned int is_sp,
 		unsigned int n, enum ringbuf_queue_behavior behavior,
 		uint32_t *old_head, uint32_t *new_head,
@@ -554,7 +556,7 @@ __ringbuf_move_prod_head(struct ringbuf *r, unsigned int is_sp,
 	return n;
 }
 
-static inline unsigned int
+static __rb_always_inline unsigned int
 __ringbuf_do_enqueue_elem(struct ringbuf *r, const void *obj_table, unsigned int n,
 		enum ringbuf_queue_behavior behavior, unsigned int is_sp)
 {
@@ -575,7 +577,7 @@ end:
 	return n;
 }
 
-static inline unsigned int
+static __rb_always_inline unsigned int
 __ringbuf_move_cons_head(struct ringbuf *r, int is_sc,
 		unsigned int n, enum ringbuf_queue_behavior behavior,
 		uint32_t *old_head, uint32_t *new_head,
@@ -627,7 +629,7 @@ __ringbuf_move_cons_head(struct ringbuf *r, int is_sc,
 	return n;
 }
 
-static inline unsigned int
+static __rb_always_inline unsigned int
 __ringbuf_do_dequeue_elem(struct ringbuf *r, void *obj_table, unsigned int n,
 		enum ringbuf_queue_behavior behavior, unsigned int is_sc)
 {
@@ -672,7 +674,7 @@ end:
  *   if behavior = RINGBUF_QUEUE_VARIABLE
  *   - n: Actual number of objects enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 __ringbuf_mp_do_enqueue(struct ringbuf *r, void * const *obj_table,
 			 unsigned n, enum ringbuf_queue_behavior behavior)
 {
@@ -699,7 +701,7 @@ __ringbuf_mp_do_enqueue(struct ringbuf *r, void * const *obj_table,
  *   if behavior = RINGBUF_QUEUE_VARIABLE
  *   - n: Actual number of objects enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 __ringbuf_sp_do_enqueue(struct ringbuf *r, void * const *obj_table,
 			 unsigned n, enum ringbuf_queue_behavior behavior)
 {
@@ -733,7 +735,7 @@ __ringbuf_sp_do_enqueue(struct ringbuf *r, void * const *obj_table,
  *   - n: Actual number of objects dequeued.
  */
 
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 __ringbuf_mc_do_dequeue(struct ringbuf *r, void **obj_table,
 		 unsigned n, enum ringbuf_queue_behavior behavior)
 {
@@ -763,7 +765,7 @@ __ringbuf_mc_do_dequeue(struct ringbuf *r, void **obj_table,
  *   if behavior = RINGBUF_QUEUE_VARIABLE
  *   - n: Actual number of objects dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 __ringbuf_sc_do_dequeue(struct ringbuf *r, void **obj_table,
 		 unsigned n, enum ringbuf_queue_behavior behavior)
 {
@@ -786,7 +788,7 @@ __ringbuf_sc_do_dequeue(struct ringbuf *r, void **obj_table,
  *   - 0: Success; objects enqueue.
  *   - -ENOBUFS: Not enough room in the ring to enqueue, no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_mp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
@@ -806,7 +808,7 @@ ringbuf_mp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_sp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
@@ -830,7 +832,7 @@ ringbuf_sp_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
 		      unsigned n)
 {
@@ -854,7 +856,7 @@ ringbuf_enqueue_bulk(struct ringbuf *r, void * const *obj_table,
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_mp_enqueue(struct ringbuf *r, void *obj)
 {
 	return ringbuf_mp_enqueue_bulk(r, &obj, 1);
@@ -871,7 +873,7 @@ ringbuf_mp_enqueue(struct ringbuf *r, void *obj)
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_sp_enqueue(struct ringbuf *r, void *obj)
 {
 	return ringbuf_sp_enqueue_bulk(r, &obj, 1);
@@ -892,7 +894,7 @@ ringbuf_sp_enqueue(struct ringbuf *r, void *obj)
  *   - 0: Success; objects enqueued.
  *   - -ENOBUFS: Not enough room in the ring to enqueue; no object is enqueued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_enqueue(struct ringbuf *r, void *obj)
 {
 	if (r->prod.sp_enqueue)
@@ -918,7 +920,7 @@ ringbuf_enqueue(struct ringbuf *r, void *obj)
  *   - -ENOENT: Not enough entries in the ring to dequeue; no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_mc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	return __ringbuf_mc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_FIXED) ? 0 : -ENOENT;
@@ -939,7 +941,7 @@ ringbuf_mc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
  *   - -ENOENT: Not enough entries in the ring to dequeue; no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_sc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	return __ringbuf_sc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_FIXED) ? 0 : -ENOENT;
@@ -963,7 +965,7 @@ ringbuf_sc_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
  *   - -ENOENT: Not enough entries in the ring to dequeue, no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	if (r->cons.sc_dequeue)
@@ -987,7 +989,7 @@ ringbuf_dequeue_bulk(struct ringbuf *r, void **obj_table, unsigned n)
  *   - -ENOENT: Not enough entries in the ring to dequeue; no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_mc_dequeue(struct ringbuf *r, void **obj_p)
 {
 	return ringbuf_mc_dequeue_bulk(r, obj_p, 1);
@@ -1005,7 +1007,7 @@ ringbuf_mc_dequeue(struct ringbuf *r, void **obj_p)
  *   - -ENOENT: Not enough entries in the ring to dequeue, no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_sc_dequeue(struct ringbuf *r, void **obj_p)
 {
 	return ringbuf_sc_dequeue_bulk(r, obj_p, 1);
@@ -1027,7 +1029,7 @@ ringbuf_sc_dequeue(struct ringbuf *r, void **obj_p)
  *   - -ENOENT: Not enough entries in the ring to dequeue, no object is
  *     dequeued.
  */
-static inline int __attribute__((always_inline))
+static __rb_always_inline int
 ringbuf_dequeue(struct ringbuf *r, void **obj_p)
 {
 	if (r->cons.sc_dequeue)
@@ -1045,7 +1047,7 @@ ringbuf_dequeue(struct ringbuf *r, void **obj_p)
  *   - 1: The ring is full.
  *   - 0: The ring is not full.
  */
-static inline int
+static __rb_always_inline int
 ringbuf_full(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
@@ -1062,7 +1064,7 @@ ringbuf_full(const struct ringbuf *r)
  *   - 1: The ring is empty.
  *   - 0: The ring is not empty.
  */
-static inline int
+static __rb_always_inline int
 ringbuf_empty(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
@@ -1078,7 +1080,7 @@ ringbuf_empty(const struct ringbuf *r)
  * @return
  *   The number of entries in the ring.
  */
-static inline unsigned
+static __rb_always_inline unsigned
 ringbuf_count(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
@@ -1094,7 +1096,7 @@ ringbuf_count(const struct ringbuf *r)
  * @return
  *   The number of free entries in the ring.
  */
-static inline unsigned
+static __rb_always_inline unsigned
 ringbuf_free_count(const struct ringbuf *r)
 {
 	uint32_t prod_tail = r->prod.tail;
@@ -1112,7 +1114,7 @@ ringbuf_free_count(const struct ringbuf *r)
  *   NOTE: this is not the same as the usable space in the ring. To query that
  *   use ``ringbuf_get_capacity()``.
  */
-static inline unsigned int
+static __rb_always_inline unsigned int
 ringbuf_get_size(const struct ringbuf *r)
 {
 	return r->size;
@@ -1126,7 +1128,7 @@ ringbuf_get_size(const struct ringbuf *r)
  * @return
  *   The usable size of the ring.
  */
-static inline unsigned int
+static __rb_always_inline unsigned int
 ringbuf_get_capacity(const struct ringbuf *r)
 {
 	return r->capacity;
@@ -1147,7 +1149,7 @@ ringbuf_get_capacity(const struct ringbuf *r)
  * @return
  *   - n: Actual number of objects enqueued.
  */
-static inline unsigned __attribute__((always_inline))
+static __rb_always_inline unsigned
 ringbuf_mp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
@@ -1166,7 +1168,7 @@ ringbuf_mp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
  * @return
  *   - n: Actual number of objects enqueued.
  */
-static inline unsigned __attribute__((always_inline))
+static __rb_always_inline unsigned
 ringbuf_sp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
 			 unsigned n)
 {
@@ -1189,7 +1191,7 @@ ringbuf_sp_enqueue_burst(struct ringbuf *r, void * const *obj_table,
  * @return
  *   - n: Actual number of objects enqueued.
  */
-static inline unsigned __attribute__((always_inline))
+static __rb_always_inline unsigned
 ringbuf_enqueue_burst(struct ringbuf *r, void * const *obj_table,
 		      unsigned n)
 {
@@ -1216,7 +1218,7 @@ ringbuf_enqueue_burst(struct ringbuf *r, void * const *obj_table,
  * @return
  *   - n: Actual number of objects dequeued, 0 if ring is empty
  */
-static inline unsigned __attribute__((always_inline))
+static __rb_always_inline unsigned
 ringbuf_mc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	return __ringbuf_mc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
@@ -1236,7 +1238,7 @@ ringbuf_mc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
  * @return
  *   - n: Actual number of objects dequeued, 0 if ring is empty
  */
-static inline unsigned __attribute__((always_inline))
+static __rb_always_inline unsigned
 ringbuf_sc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	return __ringbuf_sc_do_dequeue(r, obj_table, n, RINGBUF_QUEUE_VARIABLE);
@@ -1258,7 +1260,7 @@ ringbuf_sc_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
  * @return
  *   - Number of objects dequeued
  */
-static inline unsigned __attribute__((always_inline))
+static __rb_always_inline unsigned
 ringbuf_dequeue_burst(struct ringbuf *r, void **obj_table, unsigned n)
 {
 	if (r->cons.sc_dequeue)
