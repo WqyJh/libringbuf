@@ -110,7 +110,7 @@ ringbuf_init(struct ringbuf *r, unsigned count,
 	r->cons.sc_dequeue = !!(flags & RING_F_SC_DEQ);
 
     if (flags & RING_F_EXACT_SZ) {
-		r->size = __align32prevpow2(count + 1);
+		r->size = __align32pow2(count + 1);
 		r->mask = r->size - 1;
 		r->capacity = count;
 	} else {
@@ -138,7 +138,7 @@ ringbuf_create(unsigned count, unsigned flags)
 
     /* for an exact size ring, round up from count to a power of two */
 	if (flags & RING_F_EXACT_SZ)
-		count = __align32prevpow2(count + 1);
+		count = __align32pow2(count + 1);
 
 	ring_size = ringbuf_get_memsize(count);
 	if (ring_size < 0) {
@@ -183,4 +183,7 @@ ringbuf_dump(FILE *f, const struct ringbuf *r)
 	fprintf(f, "  ph=%"PRIu32"\n", r->prod.head);
 	fprintf(f, "  used=%u\n", ringbuf_count(r));
 	fprintf(f, "  avail=%u\n", ringbuf_free_count(r));
+	fprintf(f, "  size=%u\n", ringbuf_get_size(r));
+	fprintf(f, "  capacity=%u\n", ringbuf_get_capacity(r));
+	fprintf(f, "  mask=%u\n", r->mask);
 }

@@ -35,7 +35,7 @@ install(TARGETS ringbuf ringbuf_static
     PUBLIC_HEADER DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 # -DENABLE_TESTING=ON
-option(ENABLE_TESTING "Enable make test" OFF)
+option(ENABLE_TESTING "Enable make test" ON)
 if (ENABLE_TESTING)
     # apt install libgtest-dev
     enable_testing()
@@ -43,7 +43,7 @@ if (ENABLE_TESTING)
 endif()
 
 # -DENABLE_BENCH=ON
-option(ENABLE_BENCH "Enable make bench" OFF)
+option(ENABLE_BENCH "Enable make bench" ON)
 if (ENABLE_BENCH)
     # using the following command to install benchmark library
     # apt install libbenchmark-dev

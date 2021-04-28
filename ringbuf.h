@@ -87,7 +87,6 @@
  *
  */
 
-#include <asm-generic/errno-base.h>
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -154,20 +153,21 @@ __combine32ms1b(uint32_t x)
 }
 
 /**
- * Aligns input parameter to the previous power of 2
+ * Aligns input parameter to the next power of 2
  *
  * @param x
  *   The integer value to align
  *
  * @return
- *   Input parameter aligned to the previous power of 2
+ *   Input parameter aligned to the next power of 2
  */
-static __rb_always_inline uint32_t
-__align32prevpow2(uint32_t x)
+static inline uint32_t
+__align32pow2(uint32_t x)
 {
+	x--;
 	x = __combine32ms1b(x);
 
-	return x - (x >> 1);
+	return x + 1;
 }
 
 #ifndef likely
@@ -190,6 +190,10 @@ enum ringbuf_queue_behavior {
                                     *   if RINGBUF_PAUSE_REP not defined. */
 #endif
 
+#define __rb_aligned(a) __attribute__((__aligned__(a)))
+
+#define __rb_cache_aligned __rb_aligned(CACHE_LINE_SIZE)
+
 /**
  * An RTE ring structure.
  *
@@ -206,21 +210,27 @@ struct ringbuf {
 	uint32_t mask;              /**< Mask (size-1) of ring. */
     uint32_t capacity;          /**< Usable size of ring */
 
+	char pad0 __rb_cache_aligned; /**< empty cache line */
+
 	/** Ring producer status. */
 	struct prod {
 		uint32_t sp_enqueue;     /**< True, if single producer. */
 		volatile uint32_t head;  /**< Producer head. */
 		volatile uint32_t tail;  /**< Producer tail. */
-	} prod __attribute__((__aligned__(CACHE_LINE_SIZE)));
+	} prod __rb_cache_aligned;
+
+	char pad1 __rb_cache_aligned; /**< empty cache line */
 
 	/** Ring consumer status. */
 	struct cons {
 		uint32_t sc_dequeue;     /**< True, if single consumer. */
 		volatile uint32_t head;  /**< Consumer head. */
 		volatile uint32_t tail;  /**< Consumer tail. */
-	} cons  __attribute__((__aligned__(CACHE_LINE_SIZE)));
+	} cons  __rb_cache_aligned;
 
-	void *ring[] __attribute__((__aligned__(CACHE_LINE_SIZE)));
+	char pad2 __rb_cache_aligned; /**< empty cache line */
+
+	void *ring[] __rb_cache_aligned;
 	/**< Memory space of ring starts here.
 	                                     * about compiler re-ordering */
 };
