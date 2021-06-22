@@ -208,7 +208,6 @@ int
 test_ring_negative_tests(void)
 {
 	struct ringbuf *rp = NULL;
-	struct ringbuf *rt = NULL;
 
     /* Test if ring size is not power of 2 */
     rp = test_ring_create(RING_SIZE + 1, 0);
@@ -353,7 +352,6 @@ test_ring_burst_bulk_tests2(unsigned int test_idx)
 	struct ringbuf *r;
 	void **src = NULL, **cur_src = NULL, **dst = NULL, **cur_dst = NULL;
 	int ret;
-	unsigned int i;
 
     test_ring_print_test_string(test_enqdeq_impl[test_idx].desc,
         test_enqdeq_impl[test_idx].api_type);
@@ -436,7 +434,7 @@ test_ring_burst_bulk_tests3(unsigned int test_idx)
 	struct ringbuf *r;
 	void **src = NULL, **cur_src = NULL, **dst = NULL, **cur_dst = NULL;
 	int ret;
-	unsigned int i, j;
+	unsigned int j;
 
     test_ring_print_test_string(test_enqdeq_impl[test_idx].desc,
         test_enqdeq_impl[test_idx].api_type);
@@ -503,7 +501,7 @@ test_ring_burst_bulk_tests4(unsigned int test_idx)
 	struct ringbuf *r;
 	void **src = NULL, **cur_src = NULL, **dst = NULL, **cur_dst = NULL;
 	int ret;
-	unsigned int i, j;
+	unsigned int j;
 	unsigned int api_type, num_elems;
 
 	api_type = test_enqdeq_impl[test_idx].api_type;
@@ -617,7 +615,7 @@ int
 test_ring_basic_ex(void)
 {
 	int ret = -1;
-	unsigned int i, j;
+	unsigned int j;
 	struct ringbuf *rp = NULL;
 	void **src = NULL, **cur_src = NULL, **dst = NULL, **cur_dst = NULL;
 
@@ -734,7 +732,7 @@ test_ring_with_exact_size(void)
 	void **src_orig = NULL, **dst_orig = NULL;
 	void **src = NULL, **cur_src = NULL, **dst = NULL, **cur_dst = NULL;
 	const unsigned int ring_sz = 16;
-	unsigned int i, j;
+	unsigned int j;
 	int ret = -1;
 
     test_ring_print_test_string("Test exact size ring", TEST_RING_IGNORE_API_TYPE);

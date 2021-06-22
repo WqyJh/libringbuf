@@ -6,6 +6,8 @@ include_directories(${GTEST_INCLUDE_DIRS})
 
 set(GTEST_LIBS ${GTEST_BOTH_LIBRARIES} pthread)
 
+set(CMAKE_C_FLAGS "$ENV{CFLAGS} -Wno-incompatible-pointer-types")
+
 add_library(test_ring SHARED test_ring.c)
 set_target_properties(test_ring PROPERTIES LINKER_LANGUAGE C)
 target_link_libraries(test_ring ringbuf)

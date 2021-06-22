@@ -34,3 +34,5 @@ for (int i = 0; i < SIZE; i++) {
 }
 ringbuf_free(r);
 ```
+
+Adding definition `-DRINGBUF_ALWAYS_INLINE` when compiling and linking this library to force the compile to inline all the api functions in the header file.

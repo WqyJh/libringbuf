@@ -9,6 +9,11 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_definitions(-march=native)
 
+option(RINGBUF_ALWAYS_INLINE "Enable always inline" ON)
+if (RINGBUF_ALWAYS_INLINE)
+    add_definitions(-DRINGBUF_ALWAYS_INLINE)
+endif()
+
 if (NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE "Release")
     message(STATUS "No CMAKE_BUILD_TYPE selected, defaulting to ${CMAKE_BUILD_TYPE}")
